@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meme Vault</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="https://unpkg.com/mvp.css">
+</head>
+<body>
+    <header>
+        <h1>Private Meme/GIF Vault</h1>
+        <form hx-post="/upload" hx-target="#results" hx-swap="beforebegin" enctype="multipart/form-data">
+            <input type="file" name="files" multiple accept="image/*,video/*">
+            <input type="text" name="tags" placeholder="Tags (comma separated)">
+            <button type="submit">Upload</button>
+        </form>
+        <input type="text" name="q" placeholder="Search tags or OCR text..."
+               hx-get="/search" hx-trigger="keyup changed delay:300ms" hx-target="#results">
+    </header>
+    <main>
+        <div id="results">
+            {{template "grid" .}}
+        </div>
+    </main>
+</body>
+</html>

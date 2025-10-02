@@ -1,0 +1,6 @@
+*.md
+!README.md
+
+static/
+storage/
+meme-vault

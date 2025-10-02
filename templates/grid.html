@@ -1,0 +1,18 @@
+{{define "grid"}}
+<div class="grid">
+    {{range .}}
+    <div class="card">
+        <img src="/{{.Thumb}}" alt="thumbnail" width="200">
+        <div class="tags">{{.Tags}}</div>
+        <details>
+            <summary>OCR Text</summary>
+            <p>{{.OcrText}}</p>
+        </details>
+        <form hx-put="/media/{{.ID}}/tags" hx-swap="innerHTML" hx-target=".tags">
+            <input type="text" name="tags" value="{{.Tags}}">
+            <button type="submit">Update</button>
+        </form>
+    </div>
+    {{end}}
+</div>
+{{end}}
