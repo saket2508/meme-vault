@@ -1,18 +1,18 @@
 {{define "grid"}}
-<div class="grid">
-    {{range .}}
-    <div class="card">
-        <img src="/{{.Thumb}}" alt="thumbnail" width="200">
-        <div class="tags">{{.Tags}}</div>
-        <details>
-            <summary>OCR Text</summary>
-            <p>{{.OcrText}}</p>
+{{range .}}
+<div class="bg-white border rounded-lg shadow-md p-4">
+    <img src="/{{.Thumb}}" alt="thumbnail" class="w-full h-48 object-cover rounded">
+    <div class="mt-2">
+        <div id="tags-{{.ID}}" class="tags text-sm text-gray-600">{{.Tags}}</div>
+        <details class="mt-2">
+            <summary class="cursor-pointer text-blue-600">OCR Text</summary>
+            <p class="mt-1 text-sm">{{.OcrText}}</p>
         </details>
-        <form hx-put="/media/{{.ID}}/tags" hx-swap="innerHTML" hx-target=".tags">
-            <input type="text" name="tags" value="{{.Tags}}">
-            <button type="submit">Update</button>
+        <form hx-put="/media/{{.ID}}/tags" hx-swap="innerHTML" hx-target="#tags-{{.ID}}" class="mt-2 flex">
+            <input type="text" name="tags" value="{{.Tags}}" class="border flex-1 p-1 text-sm">
+            <button type="submit" class="bg-blue-500 text-white px-2 py-1 ml-2 text-sm">Update</button>
         </form>
     </div>
-    {{end}}
 </div>
+{{end}}
 {{end}}

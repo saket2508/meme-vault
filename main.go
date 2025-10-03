@@ -70,6 +70,11 @@ func uploadHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// Insert into FTS
+		_, err = DB.Exec("INSERT INTO media_fts (ocr_text, tags, path, id) VALUES (?, ?, ?, ?)", "", tags, path, id)
+		if err != nil {
+			log.Printf("Failed to insert FTS: %v", err)
+		}
 
 		// Start background processing
 		go processMedia(id, path, mimeType)
@@ -102,12 +107,15 @@ func indexHandler(c *gin.Context) {
 
 func searchHandler(c *gin.Context) {
 	q := c.Query("q")
+	log.Printf("Search query: '%s'", q)
 	media, err := getMedia(q)
 	if err != nil {
+		log.Printf("Search error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.HTML(http.StatusOK, "grid.html", media)
+	log.Printf("Found %d results for query '%s'", len(media), q)
+	c.HTML(http.StatusOK, "grid", media)
 }
 
 func getMedia(query string) ([]Media, error) {
@@ -116,12 +124,31 @@ func getMedia(query string) ([]Media, error) {
 	if query == "" {
 		rows, err = DB.Query("SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, created_at FROM media ORDER BY created_at DESC")
 	} else {
+		log.Printf("FTS query: %s", query)
+		ftsRows, err := DB.Query("SELECT id FROM media_fts WHERE media_fts MATCH ?", query)
+		if err != nil {
+			log.Printf("FTS query error: %v", err)
+			return nil, err
+		}
+		var ids []string
+		for ftsRows.Next() {
+			var id string
+			ftsRows.Scan(&id)
+			ids = append(ids, id)
+		}
+		ftsRows.Close()
+		log.Printf("Matching ids: %v", ids)
+		if len(ids) == 0 {
+			return []Media{}, nil
+		}
+		placeholders := strings.Repeat("?,", len(ids))
+		placeholders = placeholders[:len(placeholders)-1] // remove last comma
 		rows, err = DB.Query(`
-			SELECT m.id, m.path, m.thumb, m.mime, m.width, m.height, m.size_bytes, m.tags, m.ocr_text, m.created_at
-			FROM media m
-			WHERE m.id IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?)
-			ORDER BY m.created_at DESC
-		`, query)
+			SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, created_at
+			FROM media
+			WHERE id IN (`+placeholders+`)
+			ORDER BY created_at DESC
+		`, idsToInterface(ids)...)
 	}
 	if err != nil {
 		return nil, err
@@ -137,16 +164,32 @@ func getMedia(query string) ([]Media, error) {
 		}
 		media = append(media, m)
 	}
+	log.Printf("Returning %d media items", len(media))
 	return media, nil
+}
+
+func idsToInterface(ids []string) []interface{} {
+	result := make([]interface{}, len(ids))
+	for i, id := range ids {
+		result[i] = id
+	}
+	return result
 }
 
 func updateTagsHandler(c *gin.Context) {
 	id := c.Param("id")
 	tags := c.PostForm("tags")
+	log.Printf("Updating tags for id: %s to: %s", id, tags)
 	_, err := DB.Exec("UPDATE media SET tags = ? WHERE id = ?", tags, id)
 	if err != nil {
+		log.Printf("Failed to update media tags: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Update FTS
+	_, err = DB.Exec("UPDATE media_fts SET tags = ? WHERE id = ?", tags, id)
+	if err != nil {
+		log.Printf("Failed to update FTS tags for %s: %v", id, err)
 	}
 	c.String(http.StatusOK, tags)
 }
@@ -187,6 +230,11 @@ func processImage(id, path string) {
 	_, err = DB.Exec("UPDATE media SET thumb = ?, width = ?, height = ?, ocr_text = ? WHERE id = ?", thumbPath, width, height, ocrText, id)
 	if err != nil {
 		log.Printf("Failed to update DB for %s: %v", id, err)
+	}
+	// Update FTS
+	_, err = DB.Exec("UPDATE media_fts SET ocr_text = ? WHERE id = ?", ocrText, id)
+	if err != nil {
+		log.Printf("Failed to update FTS for %s: %v", id, err)
 	}
 }
 
