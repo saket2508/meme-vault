@@ -9,10 +9,10 @@
     <header class="bg-blue-600 text-white p-4">
         <h1 class="text-2xl font-bold">Private Meme/GIF Vault</h1>
         <div class="mt-4 space-y-2">
-            <form hx-post="/upload" hx-target="#results" hx-swap="beforebegin" enctype="multipart/form-data" class="flex space-x-2">
-                <input type="file" name="files" multiple accept="image/*,video/*" class="border p-2 bg-white text-black">
+            <form hx-post="/upload" hx-target="#results" hx-swap="beforebegin" hx-swap="none" hx-on:htmx:after-request="handleUploadResponse(event)" enctype="multipart/form-data" class="flex space-x-2">
+                <input type="file" name="files" multiple accept="image/*,video/*" onchange="toggleUploadButton(this)" class="border p-2 bg-white text-black">
                 <input type="text" name="tags" placeholder="Tags (comma separated)" class="border p-2 flex-1 bg-white text-black">
-                <button type="submit" class="bg-green-500 text-white px-4 py-2">Upload</button>
+                <button type="submit" id="upload-btn" disabled class="bg-green-500 text-white px-4 py-2 disabled:opacity-50">Upload</button>
             </form>
             <input type="text" name="q" placeholder="Search tags or OCR text..." class="w-full border p-2 bg-white text-black"
                    hx-get="/search" hx-trigger="keyup changed delay:300ms" hx-target="#results">
@@ -23,5 +23,37 @@
             {{template "grid" .}}
         </div>
     </main>
+    <div id="toast" class="fixed bottom-4 right-4 p-4 rounded shadow-lg hidden z-50">
+        <p id="toast-message"></p>
+    </div>
+    <script>
+        function toggleUploadButton(input) {
+            const btn = document.getElementById('upload-btn');
+            btn.disabled = input.files.length === 0;
+        }
+
+        function handleUploadResponse(event) {
+            const xhr = event.detail.xhr;
+            if (xhr.status === 200) {
+                showToast('Uploaded successfully', 'success');
+                // Reload the page or update results
+                location.reload();
+            } else if (xhr.status === 400) {
+                const error = JSON.parse(xhr.responseText).error;
+                showToast(error, 'error');
+            } else {
+                showToast('Upload failed', 'error');
+            }
+        }
+
+        function showToast(message, type) {
+            const toast = document.getElementById('toast');
+            const msg = document.getElementById('toast-message');
+            msg.textContent = message;
+            toast.className = `fixed bottom-4 right-4 p-4 rounded shadow-lg z-50 ${type === 'error' ? 'bg-red-500' : 'bg-green-500'} text-white`;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+    </script>
 </body>
 </html>

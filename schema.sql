@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS media (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
   path TEXT NOT NULL,
   thumb TEXT,
   mime TEXT NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS media (
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts4(
-  ocr_text, tags, path
+  id, ocr_text, tags, path
 );
 
 

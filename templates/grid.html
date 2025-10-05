@@ -1,12 +1,12 @@
 {{define "grid"}}
 {{range .}}
 <div class="bg-white border rounded-lg shadow-md p-4">
-    <img src="/{{.Thumb}}" alt="thumbnail" class="w-full h-48 object-cover rounded">
+    <img src="/{{.Thumb.String}}" alt="thumbnail" class="w-full h-48 object-cover rounded">
     <div class="mt-2">
         <div id="tags-{{.ID}}" class="tags text-sm text-gray-600">{{.Tags}}</div>
         <details class="mt-2">
             <summary class="cursor-pointer text-blue-600">OCR Text</summary>
-            <p class="mt-1 text-sm">{{.OcrText}}</p>
+            <p class="mt-1 text-sm">{{.OcrText.String}}</p>
         </details>
         <form hx-put="/media/{{.ID}}/tags" hx-swap="innerHTML" hx-target="#tags-{{.ID}}" class="mt-2 flex">
             <input type="text" name="tags" value="{{.Tags}}" class="border flex-1 p-1 text-sm">

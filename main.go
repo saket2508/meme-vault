@@ -3,16 +3,18 @@ package main
 import (
 	"bytes"
 	"database/sql"
-	"github.com/disintegration/imaging"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"log"
 	"mime"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/disintegration/imaging"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -43,10 +45,35 @@ func uploadHandler(c *gin.Context) {
 	files := form.File["files"]
 	tags := c.PostForm("tags")
 
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No files selected"})
+		return
+	}
+
+	allowedTypes := map[string]bool{
+		"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true,
+		"video/mp4": true, "video/webm": true,
+	}
+	const maxSize = 10 << 20 // 10MB
+
 	for _, file := range files {
-		id := uuid.New().String()
+		mimeType := mime.TypeByExtension(filepath.Ext(file.Filename))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		if !allowedTypes[mimeType] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported file type: " + mimeType})
+			return
+		}
+		if file.Size > maxSize {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "File too large (max 10MB)"})
+			return
+		}
+	}
+
+	for _, file := range files {
 		ext := filepath.Ext(file.Filename)
-		path := "storage/" + id + ext
+		path := "storage/" + uuid.New().String() + ext
 		if err := c.SaveUploadedFile(file, path); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -65,34 +92,40 @@ func uploadHandler(c *gin.Context) {
 		}
 		sizeBytes := fileInfo.Size()
 
-		_, err = DB.Exec("INSERT INTO media (id, path, mime, size_bytes, tags) VALUES (?, ?, ?, ?, ?)", id, path, mimeType, sizeBytes, tags)
+		res, err := DB.Exec("INSERT INTO media (path, mime, size_bytes, tags) VALUES (?, ?, ?, ?)", path, mimeType, sizeBytes, tags)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
 		// Insert into FTS
-		_, err = DB.Exec("INSERT INTO media_fts (ocr_text, tags, path, id) VALUES (?, ?, ?, ?)", "", tags, path, id)
+		_, err = DB.Exec("INSERT INTO media_fts (rowid, ocr_text, tags, path) VALUES (?, ?, ?, ?)", id, "", tags, path)
 		if err != nil {
 			log.Printf("Failed to insert FTS: %v", err)
 		}
 
-		// Start background processing
-		go processMedia(id, path, mimeType)
+		//  TODO: change to background processing
+		// Process media synchronously
+		processMedia(id, path, mimeType)
 	}
-
 	c.JSON(http.StatusOK, gin.H{"message": "uploaded"})
 }
 
 type Media struct {
-	ID        string
+	ID        int64
 	Path      string
-	Thumb     string
+	Thumb     sql.NullString
 	Mime      string
-	Width     int
-	Height    int
+	Width     sql.NullInt32
+	Height    sql.NullInt32
 	SizeBytes int
 	Tags      string
-	OcrText   string
+	OcrText   sql.NullString
 	CreatedAt string
 }
 
@@ -125,14 +158,14 @@ func getMedia(query string) ([]Media, error) {
 		rows, err = DB.Query("SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, created_at FROM media ORDER BY created_at DESC")
 	} else {
 		log.Printf("FTS query: %s", query)
-		ftsRows, err := DB.Query("SELECT id FROM media_fts WHERE media_fts MATCH ?", query)
+		ftsRows, err := DB.Query("SELECT rowid FROM media_fts WHERE media_fts MATCH ?", query)
 		if err != nil {
 			log.Printf("FTS query error: %v", err)
 			return nil, err
 		}
-		var ids []string
+		var ids []int64
 		for ftsRows.Next() {
-			var id string
+			var id int64
 			ftsRows.Scan(&id)
 			ids = append(ids, id)
 		}
@@ -168,7 +201,7 @@ func getMedia(query string) ([]Media, error) {
 	return media, nil
 }
 
-func idsToInterface(ids []string) []interface{} {
+func idsToInterface(ids []int64) []interface{} {
 	result := make([]interface{}, len(ids))
 	for i, id := range ids {
 		result[i] = id
@@ -177,24 +210,29 @@ func idsToInterface(ids []string) []interface{} {
 }
 
 func updateTagsHandler(c *gin.Context) {
-	id := c.Param("id")
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
+		return
+	}
 	tags := c.PostForm("tags")
-	log.Printf("Updating tags for id: %s to: %s", id, tags)
-	_, err := DB.Exec("UPDATE media SET tags = ? WHERE id = ?", tags, id)
+	log.Printf("Updating tags for id: %d to: %s", id, tags)
+	_, err = DB.Exec("UPDATE media SET tags = ? WHERE id = ?", tags, id)
 	if err != nil {
 		log.Printf("Failed to update media tags: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	// Update FTS
-	_, err = DB.Exec("UPDATE media_fts SET tags = ? WHERE id = ?", tags, id)
+	_, err = DB.Exec("UPDATE media_fts SET tags = ? WHERE rowid = ?", tags, id)
 	if err != nil {
-		log.Printf("Failed to update FTS tags for %s: %v", id, err)
+		log.Printf("Failed to update FTS tags for %d: %v", id, err)
 	}
 	c.String(http.StatusOK, tags)
 }
 
-func processMedia(id, path, mimeType string) {
+func processMedia(id int64, path, mimeType string) {
 	if strings.HasPrefix(mimeType, "image/") {
 		processImage(id, path)
 	} else if strings.HasPrefix(mimeType, "video/") || mimeType == "image/gif" {
@@ -202,7 +240,7 @@ func processMedia(id, path, mimeType string) {
 	}
 }
 
-func processImage(id, path string) {
+func processImage(id int64, path string) {
 	src, err := imaging.Open(path)
 	if err != nil {
 		log.Printf("Failed to open image %s: %v", path, err)
@@ -211,7 +249,7 @@ func processImage(id, path string) {
 
 	// Generate thumbnail
 	thumb := imaging.Resize(src, 200, 0, imaging.Lanczos)
-	thumbPath := "static/" + id + "_thumb.jpg"
+	thumbPath := "static/" + strconv.FormatInt(id, 10) + "_thumb.jpg"
 	err = imaging.Save(thumb, thumbPath)
 	if err != nil {
 		log.Printf("Failed to save thumbnail %s: %v", thumbPath, err)
@@ -250,9 +288,9 @@ func extractOCR(imagePath string) string {
 	return strings.TrimSpace(out.String())
 }
 
-func processVideoOrGif(id, path string) {
+func processVideoOrGif(id int64, path string) {
 	// Extract first frame
-	framePath := "static/" + id + "_frame.jpg"
+	framePath := "static/" + strconv.FormatInt(id, 10) + "_frame.jpg"
 	cmd := exec.Command("ffmpeg", "-i", path, "-vframes", "1", "-q:v", "2", framePath)
 	err := cmd.Run()
 	if err != nil {
