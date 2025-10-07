@@ -17,6 +17,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// ProcessingJob represents a media processing task
+type ProcessingJob struct {
+	ID       int64
+	Path     string
+	MimeType string
+}
+
+// Job queue channel
+var jobQueue = make(chan ProcessingJob, 100)
+
 func main() {
 	initDB()
 	r := gin.Default()
@@ -29,10 +39,27 @@ func main() {
 	r.GET("/search", searchHandler)
 	r.POST("/upload", uploadHandler)
 	r.PUT("/media/:id/tags", updateTagsHandler)
+	r.GET("/media/:id/status", getMediaStatusHandler)
+
+	// Start background processing workers
+	go startProcessingWorkers(3)
 
 	log.Println("listening on http://localhost:8080")
 	if err := r.Run(":8080"); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// startProcessingWorkers starts the specified number of background workers
+func startProcessingWorkers(numWorkers int) {
+	for i := range numWorkers {
+		go func(workerID int) {
+			log.Printf("Starting processing worker %d", workerID)
+			for job := range jobQueue {
+				log.Printf("Worker %d processing job for media ID %d", workerID, job.ID)
+				processMedia(job.ID, job.Path, job.MimeType)
+			}
+		}(i)
 	}
 }
 
@@ -92,7 +119,7 @@ func uploadHandler(c *gin.Context) {
 		}
 		sizeBytes := fileInfo.Size()
 
-		res, err := DB.Exec("INSERT INTO media (path, mime, size_bytes, tags) VALUES (?, ?, ?, ?)", path, mimeType, sizeBytes, tags)
+		res, err := DB.Exec("INSERT INTO media (path, mime, size_bytes, tags, processing_status) VALUES (?, ?, ?, ?, ?)", path, mimeType, sizeBytes, tags, "processing")
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -109,24 +136,28 @@ func uploadHandler(c *gin.Context) {
 			log.Printf("Failed to insert FTS: %v", err)
 		}
 
-		//  TODO: change to background processing
-		// Process media synchronously
-		processMedia(id, path, mimeType)
+		// Queue media processing for background execution
+		jobQueue <- ProcessingJob{
+			ID:       id,
+			Path:     path,
+			MimeType: mimeType,
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "uploaded"})
 }
 
 type Media struct {
-	ID        int64
-	Path      string
-	Thumb     sql.NullString
-	Mime      string
-	Width     sql.NullInt32
-	Height    sql.NullInt32
-	SizeBytes int
-	Tags      string
-	OcrText   sql.NullString
-	CreatedAt string
+	ID               int64
+	Path             string
+	Thumb            sql.NullString
+	Mime             string
+	Width            sql.NullInt32
+	Height           sql.NullInt32
+	SizeBytes        int
+	Tags             string
+	OcrText          sql.NullString
+	ProcessingStatus string
+	CreatedAt        string
 }
 
 func indexHandler(c *gin.Context) {
@@ -155,7 +186,7 @@ func getMedia(query string) ([]Media, error) {
 	var rows *sql.Rows
 	var err error
 	if query == "" {
-		rows, err = DB.Query("SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, created_at FROM media ORDER BY created_at DESC")
+		rows, err = DB.Query("SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, processing_status, created_at FROM media ORDER BY created_at DESC")
 	} else {
 		log.Printf("FTS query: %s", query)
 		ftsRows, err := DB.Query("SELECT rowid FROM media_fts WHERE media_fts MATCH ?", query)
@@ -177,7 +208,7 @@ func getMedia(query string) ([]Media, error) {
 		placeholders := strings.Repeat("?,", len(ids))
 		placeholders = placeholders[:len(placeholders)-1] // remove last comma
 		rows, err = DB.Query(`
-			SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, created_at
+			SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, processing_status, created_at
 			FROM media
 			WHERE id IN (`+placeholders+`)
 			ORDER BY created_at DESC
@@ -191,7 +222,7 @@ func getMedia(query string) ([]Media, error) {
 	var media []Media
 	for rows.Next() {
 		var m Media
-		err := rows.Scan(&m.ID, &m.Path, &m.Thumb, &m.Mime, &m.Width, &m.Height, &m.SizeBytes, &m.Tags, &m.OcrText, &m.CreatedAt)
+		err := rows.Scan(&m.ID, &m.Path, &m.Thumb, &m.Mime, &m.Width, &m.Height, &m.SizeBytes, &m.Tags, &m.OcrText, &m.ProcessingStatus, &m.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -232,11 +263,47 @@ func updateTagsHandler(c *gin.Context) {
 	c.String(http.StatusOK, tags)
 }
 
+func getMediaStatusHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id"})
+		return
+	}
+
+	var media Media
+	err = DB.QueryRow("SELECT id, path, thumb, mime, width, height, size_bytes, tags, ocr_text, processing_status, created_at FROM media WHERE id = ?", id).Scan(
+		&media.ID, &media.Path, &media.Thumb, &media.Mime, &media.Width, &media.Height, &media.SizeBytes, &media.Tags, &media.OcrText, &media.ProcessingStatus, &media.CreatedAt)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Media not found"})
+		return
+	}
+
+	// Check if this is an HTMX request
+	if c.GetHeader("HX-Request") == "true" {
+		// Return HTML fragment for HTMX
+		c.HTML(http.StatusOK, "grid", []Media{media})
+	} else {
+		// Return JSON for API calls
+		c.JSON(http.StatusOK, gin.H{
+			"id":                media.ID,
+			"processing_status": media.ProcessingStatus,
+			"thumb_url":         media.Thumb.String,
+			"ocr_text":          media.OcrText.String,
+		})
+	}
+}
+
 func processMedia(id int64, path, mimeType string) {
+	log.Printf("Starting media processing for ID %d, path: %s, type: %s", id, path, mimeType)
+	defer log.Printf("Completed media processing for ID %d", id)
+
 	if strings.HasPrefix(mimeType, "image/") {
 		processImage(id, path)
 	} else if strings.HasPrefix(mimeType, "video/") || mimeType == "image/gif" {
 		processVideoOrGif(id, path)
+	} else {
+		log.Printf("Unsupported media type for processing: %s", mimeType)
 	}
 }
 
@@ -265,7 +332,7 @@ func processImage(id int64, path string) {
 	ocrText := extractOCR(path)
 
 	// Update DB
-	_, err = DB.Exec("UPDATE media SET thumb = ?, width = ?, height = ?, ocr_text = ? WHERE id = ?", thumbPath, width, height, ocrText, id)
+	_, err = DB.Exec("UPDATE media SET thumb = ?, width = ?, height = ?, ocr_text = ?, processing_status = 'completed' WHERE id = ?", thumbPath, width, height, ocrText, id)
 	if err != nil {
 		log.Printf("Failed to update DB for %s: %v", id, err)
 	}

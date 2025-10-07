@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS media (
   tags TEXT,
   ocr_text TEXT,
   sha256 TEXT UNIQUE,
+  processing_status TEXT DEFAULT 'pending',
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
